@@ -228,7 +228,7 @@ Text-size fitting:
 
 - `text_boxes[].font_size` is treated as the requested font size. The deterministic builder may clamp it downward during normalization when the requested size is too large for the resolved source-pixel box.
 - Keep default fitting enabled for first drafts. Set `fit_text: false` only when the page author has manually calibrated the box and font size.
-- `text_boxes[].box_px` should describe the source text bounds plus modest padding. Do not use an entire card, chart, table cell group, or unrelated container as the text box, because the fitter can only infer size from the box it receives.
+- `text_boxes[].box_px` should describe the source text bounds plus modest padding. For a text box carrying its own `fill`, use the full filled rectangle boundary. Do not use an entire multi-object card, chart, table cell group, or unrelated container as the text box, because the fitter can only infer size from the box it receives.
 - Optional tuning fields are `min_font_size`, `max_font_size`, `text_fit_safety`, and `line_height`.
 
 Text alignment:
@@ -236,6 +236,12 @@ Text alignment:
 - `text_boxes[].align` accepts `left`, `center`, or `right` (default `left`). The equivalent DrawingML tokens `l`, `ctr`, and `r` are also accepted.
 - `text_boxes[].valign` accepts `top`, `middle`, or `bottom` (default `top`); `center` is an alias for `middle`. The equivalent DrawingML tokens `t`, `ctr`, and `b` are also accepted.
 - The deterministic builder translates these manifest values to valid DrawingML enum tokens. Unsupported values are page-contract violations instead of silently falling back to an application default.
+
+Text box background and border:
+
+- Put a solid text background directly on the same `text_boxes[]` item with `fill: "#RRGGBB"`. The builder emits one editable PowerPoint text box carrying both text and fill.
+- Optional `stroke`, `stroke_width`, and `dash` fields put the border on that same text box.
+- Do not create a separate rectangle in `shapes[]` when its only purpose is to provide the rectangular background or border for one text box. That produces a redundant second layer and makes editing harder. Non-rectangular geometry or a container shared by multiple child objects remains a separate shape.
 
 `text_inventory` may be a list of strings or a list of structured objects. In structured objects, the fields used for exact text validation are `text`, `required_text`, `items`, or `texts`; fields such as `id`, `decision`, `description`, and `note` are only records and are not used for exact text matching. Example:
 
