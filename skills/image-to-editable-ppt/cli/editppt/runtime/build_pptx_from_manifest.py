@@ -378,6 +378,8 @@ def text_box_xml(idx, item):
     wrap = item.get("wrap", "none")
     autofit = item.get("autofit", "none")
     autofit_xml = "<a:spAutoFit/>" if autofit == "shape" else "<a:noAutofit/>"
+    fill = shape_fill(item.get("fill"))
+    line = shape_line_xml(item.get("stroke"), item.get("stroke_width", 1), item.get("dash"))
     paragraphs = item.get("paragraphs")
     runs = item.get("runs")
 
@@ -417,7 +419,7 @@ def text_box_xml(idx, item):
     return f"""
       <p:sp>
         <p:nvSpPr><p:cNvPr id="{idx}" name="TextBox {idx}"/><p:cNvSpPr txBox="1"/><p:nvPr/></p:nvSpPr>
-        <p:spPr><a:xfrm{rotation_attr}><a:off x="{left}" y="{top}"/><a:ext cx="{width}" cy="{height}"/></a:xfrm><a:prstGeom prst="rect"><a:avLst/></a:prstGeom><a:noFill/><a:ln><a:noFill/></a:ln></p:spPr>
+        <p:spPr><a:xfrm{rotation_attr}><a:off x="{left}" y="{top}"/><a:ext cx="{width}" cy="{height}"/></a:xfrm><a:prstGeom prst="rect"><a:avLst/></a:prstGeom>{fill}{line}</p:spPr>
         <p:txBody>
           <a:bodyPr wrap="{xml_text(wrap)}" anchor="{anchor}" lIns="0" tIns="0" rIns="0" bIns="0">{autofit_xml}</a:bodyPr><a:lstStyle/>
           {text_body}
@@ -803,6 +805,9 @@ def _add_text_box(slide, item):
         Inches(float(item.get("height", 0.4))),
     )
     shape.name = str(item.get("id") or f"TextBox {len(slide.shapes)}")
+    _set_shape_fill(shape, item.get("fill"))
+    if "stroke" in item:
+        _set_shape_line(shape, item)
     if item.get("rotation") not in (None, ""):
         shape.rotation = float(item["rotation"])
 
@@ -1165,6 +1170,18 @@ def render_preview(manifest, manifest_path, out_path):
         box_height = max(1, int(item.get("height", 0.4) * scale))
         rotation = float(item.get("rotation", 0) or 0)
 
+        def draw_background(target_draw, origin_x, origin_y):
+            background = preview_color(item.get("fill"))
+            stroke = preview_color(item.get("stroke"))
+            if background not in (None, "none") or stroke not in (None, "none"):
+                stroke_width = max(1, int(round(float(item.get("stroke_width", 1)) * scale / 72)))
+                target_draw.rectangle(
+                    (origin_x, origin_y, origin_x + box_width - 1, origin_y + box_height - 1),
+                    fill=None if background in (None, "none") else background,
+                    outline=None if stroke in (None, "none") else stroke,
+                    width=stroke_width,
+                )
+
         def aligned_origin(bounds, origin_x, origin_y):
             text_width = bounds[2] - bounds[0]
             text_height = bounds[3] - bounds[1]
@@ -1218,12 +1235,15 @@ def render_preview(manifest, manifest_path, out_path):
 
         if rotation:
             layer = Image.new("RGBA", (box_width, box_height), (0, 0, 0, 0))
-            draw_content(ImageDraw.Draw(layer), 0, 0)
+            layer_draw = ImageDraw.Draw(layer)
+            draw_background(layer_draw, 0, 0)
+            draw_content(layer_draw, 0, 0)
             rotated = layer.rotate(-rotation, expand=True)
             paste_x = box_x + (box_width - rotated.width) // 2
             paste_y = box_y + (box_height - rotated.height) // 2
             canvas.paste(rotated, (paste_x, paste_y), rotated)
             return
+        draw_background(draw, box_x, box_y)
         draw_content(draw, box_x, box_y)
 
     layered = []

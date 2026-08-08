@@ -56,6 +56,33 @@ def preview_ink_center(manifest):
 
 
 class SlideLayoutTest(unittest.TestCase):
+    def test_text_background_is_a_single_filled_text_box(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            root = Path(tmp)
+            manifest = {
+                "slide": {"width": 13.333, "height": 7.5},
+                "text_boxes": [
+                    {
+                        "text": "One editable layer",
+                        "box_px": [120, 90, 480, 120],
+                        "fill": "#DCEEFF",
+                        "color": "#123456",
+                        "font_size": 24,
+                    }
+                ],
+                "source": {"width_px": 1600, "height_px": 900},
+                "content_box": {"left": 0, "top": 0, "width": 13.333, "height": 7.5},
+            }
+            output = root / "filled-text-box.pptx"
+
+            write_pptx(manifest, output, root / "manifest.json")
+
+            slide = Presentation(output).slides[0]
+            self.assertEqual(1, len(slide.shapes))
+            text_box = slide.shapes[0]
+            self.assertEqual("One editable layer", text_box.text)
+            self.assertEqual("DCEEFF", str(text_box.fill.fore_color.rgb))
+
     def test_export_uses_standard_powerpoint_ooxml_package(self):
         with tempfile.TemporaryDirectory() as tmp:
             root = Path(tmp)

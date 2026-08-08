@@ -8,6 +8,7 @@ Release notes are generated from this file. Keep changelog entries in English.
 
 - Build exported decks with the standard `python-pptx` OOXML package structure and validate Microsoft PowerPoint-required parts, replacing the hand-written minimal package that LibreOffice accepted but Windows PowerPoint could reject. (#1)
 - Preserve SVG assets as native SVG DrawingML parts without generating PNG compatibility fallbacks. (#1)
+- Store solid text backgrounds and borders on the editable text box itself instead of requiring a duplicate backing shape. (#1)
 
 ### Documentation
 
