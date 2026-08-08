@@ -1,4 +1,4 @@
 interface:
   display_name: "Image to Editable PPT"
-  short_description: "Rebuild visual slides as editable Microsoft PowerPoint files"
-  default_prompt: "Use $image-to-editable-ppt to rebuild the input as an object-level editable Microsoft PowerPoint (.pptx) file."
+  short_description: "Rebuild images, PDFs, or image-based PPT/PPTX files into editable PPTX"
+  default_prompt: "Use $image-to-editable-ppt to rebuild the input into an object-level editable PowerPoint PPTX. "
