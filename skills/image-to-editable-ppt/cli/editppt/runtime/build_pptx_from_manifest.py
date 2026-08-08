@@ -320,14 +320,16 @@ def shape_fill(fill):
     return f'<a:solidFill><a:srgbClr val="{hex_color(fill)}"/></a:solidFill>'
 
 
-def shape_line_xml(stroke, width, dash=None):
+def shape_line_xml(stroke, width, dash=None, start_arrow=None, end_arrow=None):
     if not stroke or stroke == "none":
         return '<a:ln><a:noFill/></a:ln>'
     dash_xml = f'<a:prstDash val="{xml_text(dash)}"/>' if dash else ""
+    start_xml = f'<a:headEnd type="{xml_text(start_arrow)}"/>' if start_arrow else ""
+    end_xml = f'<a:tailEnd type="{xml_text(end_arrow)}"/>' if end_arrow else ""
     return (
         f'<a:ln w="{int(float(width or 1) * 12700)}">'
         f'<a:solidFill><a:srgbClr val="{hex_color(stroke)}"/></a:solidFill>'
-        f"{dash_xml}"
+        f"{dash_xml}{start_xml}{end_xml}"
         "</a:ln>"
     )
 
@@ -437,7 +439,13 @@ def shape_xml(idx, item):
     flip_h = ' flipH="1"' if item.get("flip_h") else ""
     flip_v = ' flipV="1"' if item.get("flip_v") else ""
     fill = shape_fill(item.get("fill"))
-    line = shape_line_xml(item.get("stroke", "#000000"), stroke_width, item.get("dash"))
+    line = shape_line_xml(
+        item.get("stroke", "#000000"),
+        stroke_width,
+        item.get("dash"),
+        item.get("start_arrow"),
+        item.get("end_arrow"),
+    )
     preset = item.get("preset")
     if item.get("polygon_px"):
         geometry = custom_polygon_geometry_xml(item)
@@ -849,6 +857,19 @@ def render_preview(manifest, manifest_path, out_path):
             if "points" in item:
                 points = [value * scale for value in item["points"]]
                 draw.line(points, fill=outline, width=width)
+                for key, reverse in (("start_arrow", True), ("end_arrow", False)):
+                    if item.get(key) != "triangle":
+                        continue
+                    x1, y1, x2, y2 = points
+                    if reverse:
+                        x1, y1, x2, y2 = x2, y2, x1, y1
+                    angle = math.atan2(y2 - y1, x2 - x1)
+                    size = max(6, width * 4)
+                    base = [
+                        (x2 - size * math.cos(angle + offset), y2 - size * math.sin(angle + offset))
+                        for offset in (-0.5, 0.5)
+                    ]
+                    draw.polygon([(x2, y2), *base], fill=outline)
                 return
             if item.get("dash"):
                 draw_dashed_line(draw, box, outline, width)

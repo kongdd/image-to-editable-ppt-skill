@@ -197,7 +197,7 @@ These may use native PPT shapes or structural objects:
 
 - Straight lines, dashed lines, polylines.
 - Rectangles, rounded rectangles, circles, ellipses.
-- Ordinary arrows and connectors.
+- Ordinary arrows and connectors. Use one line with `start_arrow`/`end_arrow`; never detached triangles, which will not follow line edits.
 - Solid-color cards, panels, dividers, borders.
 - Tables, table lines, axes, gridlines.
 - Simple bar charts, progress bars, status color blocks.

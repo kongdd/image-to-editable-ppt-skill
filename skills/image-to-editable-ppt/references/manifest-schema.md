@@ -220,6 +220,8 @@ Positioned build object requirements:
 - Every non-line `shapes[]` item must have `box_px`.
 - Every line shape must have `points_px`.
 
+A native arrow is one line shape with optional `start_arrow: "triangle"` and `end_arrow: "triangle"`.
+
 `text_inventory` and `visual_inventory` are only inventories; they do not substitute for positioned `text_boxes`, `images`, and `shapes`. The manifest must be sufficient to rebuild the page without reading any custom page script.
 
 Missing coordinates are page-contract violations. The runtime must reject them during `editppt run record` and deck validation because otherwise missing values fall back to default positions such as the top-left corner.
