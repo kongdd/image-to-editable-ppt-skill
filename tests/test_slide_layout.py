@@ -97,7 +97,7 @@ class SlideLayoutTest(unittest.TestCase):
                 self.assertIn("ppt/tableStyles.xml", names)
                 self.assertIn("Microsoft", archive.read("docProps/app.xml").decode("utf-8"))
 
-    def test_svg_assets_are_rasterized_into_powerpoint_safe_media(self):
+    def test_svg_assets_are_embedded_without_raster_fallback(self):
         with tempfile.TemporaryDirectory() as tmp:
             root = Path(tmp)
             (root / "formula.svg").write_text(
@@ -110,7 +110,7 @@ class SlideLayoutTest(unittest.TestCase):
                 "content_box": {"left": 0, "top": 0, "width": 13.333, "height": 7.5},
                 "images": [{"path": "formula.svg", "box_px": [100, 100, 600, 240]}],
             }
-            output = root / "svg-safe.pptx"
+            output = root / "svg-native.pptx"
 
             write_pptx(manifest, output, root / "manifest.json")
 
@@ -118,7 +118,11 @@ class SlideLayoutTest(unittest.TestCase):
             with zipfile.ZipFile(output) as archive:
                 media = [name for name in archive.namelist() if name.startswith("ppt/media/")]
                 self.assertEqual(1, len(media))
-                self.assertTrue(media[0].endswith(".png"))
+                self.assertTrue(media[0].endswith(".svg"))
+                self.assertEqual((root / "formula.svg").read_bytes(), archive.read(media[0]))
+                slide_xml = archive.read("ppt/slides/slide1.xml").decode("utf-8")
+                self.assertIn("asvg:svgBlip", slide_xml)
+                self.assertNotIn(".png", "\n".join(archive.namelist()))
 
     def test_standard_powerpoint_export_preserves_speaker_notes(self):
         with tempfile.TemporaryDirectory() as tmp:

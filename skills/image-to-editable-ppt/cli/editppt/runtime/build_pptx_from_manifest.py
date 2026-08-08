@@ -9,16 +9,17 @@ import sys
 import tempfile
 import zipfile
 from copy import deepcopy
-from io import BytesIO
 from pathlib import Path
 from xml.etree import ElementTree as ET
 
-import fitz
 from pptx import Presentation
 from pptx.dml.color import RGBColor
 from pptx.enum.dml import MSO_LINE_DASH_STYLE
 from pptx.enum.shapes import MSO_CONNECTOR, MSO_SHAPE
 from pptx.enum.text import MSO_ANCHOR, MSO_AUTO_SIZE, PP_ALIGN
+from pptx.opc.constants import RELATIONSHIP_TYPE as RT
+from pptx.opc.package import Part
+from pptx.oxml import parse_xml
 from pptx.oxml.ns import qn
 from pptx.oxml.xmlchemy import OxmlElement
 from pptx.util import Emu, Inches, Pt
@@ -853,24 +854,64 @@ def _add_text_box(slide, item):
     return shape
 
 
-def _svg_png_stream(path, item):
-    """Render an SVG fallback bitmap accepted by all supported PowerPoint versions."""
-    with fitz.open(path) as document:
-        page = document[0]
-        target_width = max(1, int(round(float(item.get("width", 1)) * 192)))
-        target_height = max(1, int(round(float(item.get("height", 1)) * 192)))
-        matrix = fitz.Matrix(target_width / page.rect.width, target_height / page.rect.height)
-        data = page.get_pixmap(matrix=matrix, alpha=True).tobytes("png")
-    return BytesIO(data)
+def _add_svg_picture(slide, item, path):
+    """Embed SVG bytes directly using PowerPoint's SVG DrawingML extension."""
+    package = slide.part.package
+    svg_part = Part(
+        package.next_partname("/ppt/media/image%d.svg"),
+        "image/svg+xml",
+        package,
+        path.read_bytes(),
+    )
+    relationship_id = slide.part.relate_to(svg_part, RT.IMAGE)
+    shape_id = slide.shapes._next_shape_id
+    name = str(item.get("alt") or path.stem or f"Image {len(slide.shapes)}")
+    left = Emu(Inches(float(item.get("left", 0))))
+    top = Emu(Inches(float(item.get("top", 0))))
+    width = Emu(Inches(float(item.get("width", 1))))
+    height = Emu(Inches(float(item.get("height", 1))))
+    picture = parse_xml(
+        f"""<p:pic
+          xmlns:a="http://schemas.openxmlformats.org/drawingml/2006/main"
+          xmlns:asvg="http://schemas.microsoft.com/office/drawing/2016/SVG/main"
+          xmlns:p="http://schemas.openxmlformats.org/presentationml/2006/main"
+          xmlns:r="http://schemas.openxmlformats.org/officeDocument/2006/relationships">
+          <p:nvPicPr>
+            <p:cNvPr id="{shape_id}" name="{xml_text(name)}" descr="{xml_text(name)}"/>
+            <p:cNvPicPr><a:picLocks noChangeAspect="1"/></p:cNvPicPr>
+            <p:nvPr/>
+          </p:nvPicPr>
+          <p:blipFill>
+            <a:blip>
+              <a:extLst>
+                <a:ext uri="{{96DAC541-7B7A-43D3-8B79-37D633B846F1}}">
+                  <asvg:svgBlip r:embed="{relationship_id}"/>
+                </a:ext>
+              </a:extLst>
+            </a:blip>
+            <a:stretch><a:fillRect/></a:stretch>
+          </p:blipFill>
+          <p:spPr>
+            <a:xfrm>
+              <a:off x="{left}" y="{top}"/>
+              <a:ext cx="{width}" cy="{height}"/>
+            </a:xfrm>
+            <a:prstGeom prst="rect"><a:avLst/></a:prstGeom>
+          </p:spPr>
+        </p:pic>"""
+    )
+    slide.shapes._spTree.insert_element_before(picture, "p:extLst")
+    return picture
 
 
 def _add_picture(slide, item, base):
     path = Path(item["path"])
     if not path.is_absolute():
         path = base / path
-    source = _svg_png_stream(path, item) if path.suffix.lower() == ".svg" else str(path)
+    if path.suffix.lower() == ".svg":
+        return _add_svg_picture(slide, item, path)
     picture = slide.shapes.add_picture(
-        source,
+        str(path),
         Inches(float(item.get("left", 0))),
         Inches(float(item.get("top", 0))),
         Inches(float(item.get("width", 1))),

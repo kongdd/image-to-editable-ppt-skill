@@ -704,11 +704,7 @@ def main():
                 if not source_path.is_absolute():
                     source_path = manifest_base / source_path
                 if source_path.exists():
-                    if source_path.suffix.lower() == ".svg":
-                        report["warnings"].append(
-                            f"SVG asset rasterized to PNG for Microsoft PowerPoint compatibility: {image_path}"
-                        )
-                    elif file_sha256(source_path) not in embedded_media_hashes:
+                    if file_sha256(source_path) not in embedded_media_hashes:
                         report["media_hash_mismatches"].append(
                             {"path": image_path, "reason": "source bytes not found in embedded media"}
                         )

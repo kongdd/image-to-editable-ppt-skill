@@ -6,11 +6,12 @@ Release notes are generated from this file. Keep changelog entries in English.
 
 ### Fixes
 
-- Build exported decks with the standard `python-pptx` OOXML package structure and validate Microsoft PowerPoint-required parts, replacing the hand-written minimal package that LibreOffice accepted but Windows PowerPoint could reject.
+- Build exported decks with the standard `python-pptx` OOXML package structure and validate Microsoft PowerPoint-required parts, replacing the hand-written minimal package that LibreOffice accepted but Windows PowerPoint could reject. (#1)
+- Preserve SVG assets as native SVG DrawingML parts without generating PNG compatibility fallbacks. (#1)
 
 ### Documentation
 
-- Make Microsoft PowerPoint (`.pptx`) the explicit default output format in the skill contract and agent metadata.
+- Make Microsoft PowerPoint (`.pptx`) the explicit default output format in the skill contract and agent metadata. (#1)
 - Add complete Korean README and English and Korean versions of the Docsify usage documentation, with synchronized language navigation, search, and pagination. (#26)
 - Align all usage guides with the built-in-first image backend policy and block delivery when compliant image assets cannot be produced. (#26)
 - Add compact documentation, Telegram, and issue support links to all README language versions, and remove the obsolete community QR code. (#28, #29)
