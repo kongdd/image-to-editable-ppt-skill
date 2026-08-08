@@ -1,14 +1,14 @@
 ---
 name: image-to-editable-ppt
-description: Rebuild slide images, image-based or scanned PPT/PPTX files, and PDF decks into object-level editable Microsoft PowerPoint (.pptx). Use whenever the user provides any visual slide source and wants slides they can edit — "make this PPT editable", "把图片/截图转成可编辑 PPT", "this PDF is a scanned deck, restore it", recreating slides from screenshots, reconstructing slide objects, or preserving speaker notes — even if they do not say "convert". Not for authoring new presentations from scratch.
+description: Rebuild slide images, image-based or scanned PPT/PPTX files, and PDF decks into object-level editable PowerPoint (.pptx). Use whenever the user provides any visual slide source and wants slides they can edit — "make this PPT editable", "把图片/截图转成可编辑 PPT", "this PDF is a scanned deck, restore it", recreating slides from screenshots, reconstructing slide objects, or preserving speaker notes — even if they do not say "convert". Not for authoring new presentations from scratch.
 ---
 # Image to Editable PPT
 
 ## Overview
 
-This skill rebuilds visual slide inputs into object-level editable Microsoft PowerPoint `.pptx` files.
+This skill rebuilds visual slide inputs into object-level editable PowerPoint `.pptx` files.
 
-Inputs can be a single image, multiple images, a PDF, or an image-based PPT/PPTX. The default and final output format is always Microsoft PowerPoint (`.pptx`). The goal is not to wrap a full-slide screenshot inside PowerPoint; the goal is to use the `editppt` runtime and page-level prompts to decompose, reconstruct, validate, and assemble editable slides.
+Inputs can be a single image, multiple images, a PDF, or an image-based PPT/PPTX. The output is always `.pptx`. The goal is not to wrap a full-slide screenshot inside PowerPoint; the goal is to use the `editppt` runtime and page-level prompts to decompose, reconstruct, validate, and assemble editable slides.
 
 ## References
 
@@ -161,7 +161,7 @@ Agents continue only from file facts and `editppt run next`. Required states:
 ## Delivery Principles
 
 - Each page is self-checked once by the page reconstructor; the evidence is written into structured fields in `manifest.json` and into `validation.json`.
-- The final output must be a structurally valid `.pptx` that opens in Microsoft PowerPoint. A full-slide `source.png` with editable text overlaid on top is not an acceptable fallback.
+- The final output must be a currently openable, structurally valid `.pptx`. A full-slide `source.png` with editable text overlaid on top is not an acceptable fallback.
 - Whether an imperfection must be fixed inside its page or may ship as a recorded warning is governed by the "Fix versus Warning" section of `references/page-decision-tree.md`. A warning may never replace a missing required workflow step.
 
 ## Updating This Skill
