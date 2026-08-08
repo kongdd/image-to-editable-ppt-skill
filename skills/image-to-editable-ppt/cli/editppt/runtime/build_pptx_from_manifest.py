@@ -9,7 +9,19 @@ import sys
 import tempfile
 import zipfile
 from copy import deepcopy
+from io import BytesIO
 from pathlib import Path
+from xml.etree import ElementTree as ET
+
+import fitz
+from pptx import Presentation
+from pptx.dml.color import RGBColor
+from pptx.enum.dml import MSO_LINE_DASH_STYLE
+from pptx.enum.shapes import MSO_CONNECTOR, MSO_SHAPE
+from pptx.enum.text import MSO_ANCHOR, MSO_AUTO_SIZE, PP_ALIGN
+from pptx.oxml.ns import qn
+from pptx.oxml.xmlchemy import OxmlElement
+from pptx.util import Emu, Inches, Pt
 
 
 EMU_PER_INCH = 914400
@@ -35,6 +47,17 @@ TEXT_VERTICAL_ALIGNMENTS = {
     "t": ("t", "top"),
     "ctr": ("ctr", "middle"),
     "b": ("b", "bottom"),
+}
+POWERPOINT_REQUIRED_PARTS = {
+    "[Content_Types].xml",
+    "_rels/.rels",
+    "ppt/presentation.xml",
+    "ppt/_rels/presentation.xml.rels",
+    "ppt/presProps.xml",
+    "ppt/viewProps.xml",
+    "ppt/tableStyles.xml",
+    "ppt/theme/theme1.xml",
+    "ppt/slideMasters/slideMaster1.xml",
 }
 
 
@@ -664,25 +687,285 @@ def write_common_parts(z, slide_count, width, height, notes_count):
         z.writestr("ppt/notesMasters/_rels/notesMaster1.xml.rels", notes_master_rels_xml())
 
 
+def _rgb(value, default="000000"):
+    return RGBColor.from_string(hex_color(value, default))
+
+
+def _set_run_typeface(run, typeface):
+    """Set Latin, East Asian, and complex-script fonts explicitly."""
+    run.font.name = typeface
+    rpr = run._r.get_or_add_rPr()
+    for tag in ("ea", "cs"):
+        element = rpr.find(qn(f"a:{tag}"))
+        if element is None:
+            element = OxmlElement(f"a:{tag}")
+            rpr.append(element)
+        element.set("typeface", typeface)
+
+
+def _set_shape_fill(shape, fill):
+    if not fill or fill == "none":
+        shape.fill.background()
+        return
+    shape.fill.solid()
+    shape.fill.fore_color.rgb = _rgb(fill, "FFFFFF")
+
+
+def _set_shape_line(shape, item):
+    stroke = item.get("stroke", "#000000")
+    if not stroke or stroke == "none":
+        shape.line.fill.background()
+        return
+    shape.line.color.rgb = _rgb(stroke)
+    shape.line.width = Pt(float(item.get("stroke_width", 1)))
+    dash = str(item.get("dash") or "").strip().lower()
+    dash_styles = {
+        "dash": MSO_LINE_DASH_STYLE.DASH,
+        "dashdot": MSO_LINE_DASH_STYLE.DASH_DOT,
+        "dashdotdot": MSO_LINE_DASH_STYLE.DASH_DOT_DOT,
+        "lgdash": MSO_LINE_DASH_STYLE.LONG_DASH,
+        "lgdashdot": MSO_LINE_DASH_STYLE.LONG_DASH_DOT,
+        "dot": MSO_LINE_DASH_STYLE.ROUND_DOT,
+        "sysdot": MSO_LINE_DASH_STYLE.SQUARE_DOT,
+        "solid": MSO_LINE_DASH_STYLE.SOLID,
+    }
+    if dash in dash_styles:
+        shape.line.dash_style = dash_styles[dash]
+
+
+def _add_shape(slide, item):
+    kind = str(item.get("type", "rect"))
+    if kind == "line":
+        points = item.get("points")
+        if points and len(points) == 4:
+            x1, y1, x2, y2 = [float(value) for value in points]
+        else:
+            x1 = float(item.get("left", 0))
+            y1 = float(item.get("top", 0))
+            x2 = x1 + float(item.get("width", 1))
+            y2 = y1 + float(item.get("height", 1))
+        shape = slide.shapes.add_connector(
+            MSO_CONNECTOR.STRAIGHT,
+            Inches(x1),
+            Inches(y1),
+            Inches(x2),
+            Inches(y2),
+        )
+        _set_shape_line(shape, item)
+        return shape
+
+    polygon = item.get("polygon")
+    if polygon and len(polygon) >= 3:
+        points = [(emu(x), emu(y)) for x, y in polygon]
+        builder = slide.shapes.build_freeform(points[0][0], points[0][1])
+        builder.add_line_segments(points[1:], close=True)
+        shape = builder.convert_to_shape()
+    else:
+        shape_types = {
+            "rect": MSO_SHAPE.RECTANGLE,
+            "roundRect": MSO_SHAPE.ROUNDED_RECTANGLE,
+            "ellipse": MSO_SHAPE.OVAL,
+        }
+        shape = slide.shapes.add_shape(
+            shape_types.get(kind, MSO_SHAPE.RECTANGLE),
+            Inches(float(item.get("left", 0))),
+            Inches(float(item.get("top", 0))),
+            Inches(float(item.get("width", 1))),
+            Inches(float(item.get("height", 1))),
+        )
+        if kind == "roundRect" and len(shape.adjustments):
+            adjustment = round_rect_adjustment(item)
+            if adjustment is not None:
+                shape.adjustments[0] = adjustment / 100000
+    shape.name = str(item.get("id") or f"{kind.title()} {len(slide.shapes)}")
+    _set_shape_fill(shape, item.get("fill"))
+    _set_shape_line(shape, item)
+    if item.get("rotation") not in (None, ""):
+        shape.rotation = float(item["rotation"])
+    return shape
+
+
+def _paragraph_specs(item):
+    paragraphs = item.get("paragraphs")
+    if paragraphs:
+        return paragraphs
+    if item.get("runs"):
+        return [{"runs": item["runs"]}]
+    return str(item.get("text", "")).split("\n")
+
+
+def _add_text_box(slide, item):
+    shape = slide.shapes.add_textbox(
+        Inches(float(item.get("left", 0))),
+        Inches(float(item.get("top", 0))),
+        Inches(float(item.get("width", 1))),
+        Inches(float(item.get("height", 0.4))),
+    )
+    shape.name = str(item.get("id") or f"TextBox {len(slide.shapes)}")
+    if item.get("rotation") not in (None, ""):
+        shape.rotation = float(item["rotation"])
+
+    frame = shape.text_frame
+    frame.clear()
+    frame.margin_left = Emu(0)
+    frame.margin_top = Emu(0)
+    frame.margin_right = Emu(0)
+    frame.margin_bottom = Emu(0)
+    frame.word_wrap = item.get("wrap", "none") not in (None, "", "none")
+    frame.auto_size = (
+        MSO_AUTO_SIZE.SHAPE_TO_FIT_TEXT if item.get("autofit") == "shape" else MSO_AUTO_SIZE.NONE
+    )
+    vertical = text_vertical_alignment(item.get("valign", "top"))[1]
+    frame.vertical_anchor = {
+        "top": MSO_ANCHOR.TOP,
+        "middle": MSO_ANCHOR.MIDDLE,
+        "bottom": MSO_ANCHOR.BOTTOM,
+    }[vertical]
+    alignment = text_alignment(item.get("align", "left"))[1]
+    paragraph_alignment = {
+        "left": PP_ALIGN.LEFT,
+        "center": PP_ALIGN.CENTER,
+        "right": PP_ALIGN.RIGHT,
+    }[alignment]
+
+    for paragraph_index, paragraph_spec in enumerate(_paragraph_specs(item)):
+        paragraph = frame.paragraphs[0] if paragraph_index == 0 else frame.add_paragraph()
+        paragraph.clear()
+        paragraph.alignment = paragraph_alignment
+        paragraph.space_before = Pt(0)
+        paragraph.space_after = Pt(0)
+        if isinstance(paragraph_spec, str):
+            runs = [{"text": paragraph_spec}]
+        else:
+            runs = paragraph_spec.get("runs", [{"text": paragraph_spec.get("text", "")}])
+        for run_spec in runs:
+            run = paragraph.add_run()
+            run.text = str(run_spec.get("text", ""))
+            typeface = str(run_spec.get("font", item.get("font", "PingFang SC")))
+            _set_run_typeface(run, typeface)
+            run.font.size = Pt(float(run_spec.get("font_size", item.get("font_size", 18))))
+            run.font.bold = bool(run_spec.get("bold", item.get("bold", False)))
+            run.font.italic = bool(run_spec.get("italic", item.get("italic", False)))
+            run.font.color.rgb = _rgb(run_spec.get("color", item.get("color", "#111111")))
+            baseline = run_spec.get("baseline")
+            if baseline not in (None, ""):
+                run._r.get_or_add_rPr().set("baseline", str(int(float(baseline))))
+    return shape
+
+
+def _svg_png_stream(path, item):
+    """Render an SVG fallback bitmap accepted by all supported PowerPoint versions."""
+    with fitz.open(path) as document:
+        page = document[0]
+        target_width = max(1, int(round(float(item.get("width", 1)) * 192)))
+        target_height = max(1, int(round(float(item.get("height", 1)) * 192)))
+        matrix = fitz.Matrix(target_width / page.rect.width, target_height / page.rect.height)
+        data = page.get_pixmap(matrix=matrix, alpha=True).tobytes("png")
+    return BytesIO(data)
+
+
+def _add_picture(slide, item, base):
+    path = Path(item["path"])
+    if not path.is_absolute():
+        path = base / path
+    source = _svg_png_stream(path, item) if path.suffix.lower() == ".svg" else str(path)
+    picture = slide.shapes.add_picture(
+        source,
+        Inches(float(item.get("left", 0))),
+        Inches(float(item.get("top", 0))),
+        Inches(float(item.get("width", 1))),
+        Inches(float(item.get("height", 1))),
+    )
+    name = str(item.get("alt") or path.stem or f"Image {len(slide.shapes)}")
+    picture.name = name
+    picture._element.nvPicPr.cNvPr.set("descr", name)
+    return picture
+
+
+def _add_slide(prs, manifest, manifest_path, notes_text=None):
+    slide = prs.slides.add_slide(prs.slide_layouts[6])
+    background = manifest.get("slide", {}).get("background")
+    if background:
+        slide.background.fill.solid()
+        slide.background.fill.fore_color.rgb = _rgb(background, "FFFFFF")
+
+    layered = []
+    for index, item in enumerate(manifest.get("shapes", [])):
+        layered.append((float(item.get("z_index", 100)), index, "shape", item))
+    for index, item in enumerate(manifest.get("images", [])):
+        layered.append((float(item.get("z_index", 200)), index, "image", item))
+    for index, item in enumerate(manifest.get("text_boxes", [])):
+        layered.append((float(item.get("z_index", 300)), index, "text", item))
+
+    base = Path(manifest_path).resolve().parent
+    for _z_index, _order, kind, item in sorted(layered, key=lambda entry: (entry[0], entry[1])):
+        if kind == "shape":
+            _add_shape(slide, item)
+        elif kind == "image":
+            _add_picture(slide, item, base)
+        else:
+            _add_text_box(slide, item)
+
+    if notes_text:
+        notes_frame = slide.notes_slide.notes_text_frame
+        if notes_frame is not None:
+            notes_frame.text = str(notes_text)
+    return slide
+
+
+def _new_presentation(width, height):
+    prs = Presentation()
+    prs.slide_width = Emu(width)
+    prs.slide_height = Emu(height)
+    prs.core_properties.title = "Image to editable PPT"
+    return prs
+
+
+def powerpoint_ooxml_issues(pptx_path):
+    """Return structural issues that make a generated deck unsafe for PowerPoint."""
+    issues = []
+    path = Path(pptx_path)
+    try:
+        with zipfile.ZipFile(path) as archive:
+            names = set(archive.namelist())
+            for part in sorted(POWERPOINT_REQUIRED_PARTS - names):
+                issues.append(f"missing standard PowerPoint part: {part}")
+            for name in names:
+                if name.endswith((".xml", ".rels")):
+                    try:
+                        ET.fromstring(archive.read(name))
+                    except Exception as exc:
+                        issues.append(f"invalid XML part {name}: {exc}")
+            slide_names = sorted(name for name in names if re.match(r"ppt/slides/slide\d+\.xml$", name))
+            for slide_name in slide_names:
+                root = ET.fromstring(archive.read(slide_name))
+                ids = [node.attrib.get("id") for node in root.findall(".//p:cNvPr", {"p": "http://schemas.openxmlformats.org/presentationml/2006/main"})]
+                if len(ids) != len(set(ids)):
+                    issues.append(f"duplicate non-visual shape ids in {slide_name}")
+        reopened = Presentation(path)
+        if len(reopened.slides) < 1:
+            issues.append("PowerPoint package contains no slides")
+    except Exception as exc:
+        issues.append(f"PowerPoint OOXML package cannot be reopened: {exc}")
+    return issues
+
+
+def _save_powerpoint(prs, out):
+    prs.save(out)
+    issues = powerpoint_ooxml_issues(out)
+    if issues:
+        raise ValueError("Invalid Microsoft PowerPoint OOXML package: " + "; ".join(issues))
+
+
 def write_pptx(manifest, out_path, manifest_path):
     width = emu(manifest.get("slide", {}).get("width", 13.333))
     height = emu(manifest.get("slide", {}).get("height", 7.5))
     out = Path(out_path)
     out.parent.mkdir(parents=True, exist_ok=True)
     normalized = normalize_manifest(manifest)
-    media_index = 1
-    with zipfile.ZipFile(out, "w", zipfile.ZIP_DEFLATED) as z:
-        z.writestr("[Content_Types].xml", content_types_xml([normalized], []))
-        write_common_parts(z, 1, width, height, 0)
-        z.writestr("ppt/slides/slide1.xml", slide_xml(normalized))
-        z.writestr("ppt/slides/_rels/slide1.xml.rels", rels_xml(normalized, media_index, None))
-        base = Path(manifest_path).resolve().parent
-        for item in normalized.get("images", []):
-            src = Path(item["path"])
-            if not src.is_absolute():
-                src = base / src
-            z.write(src, f"ppt/media/image{media_index}{image_ext(src)}")
-            media_index += 1
+    prs = _new_presentation(width, height)
+    _add_slide(prs, normalized, manifest_path)
+    _save_powerpoint(prs, out)
 
 
 def deck_slide_size(deck, page_entries):
@@ -699,33 +982,12 @@ def write_deck(deck, page_entries, out_path, notes_entries):
     out = Path(out_path)
     out.parent.mkdir(parents=True, exist_ok=True)
     notes_by_page = {int(entry.get("page_index", 0)): entry for entry in notes_entries if entry.get("text")}
-    notes_indices = sorted(notes_by_page)
     normalized_entries = [{**entry, "manifest": normalize_manifest(entry["manifest"])} for entry in page_entries]
-    manifests = [entry["manifest"] for entry in normalized_entries]
-    media_index = 1
-    with zipfile.ZipFile(out, "w", zipfile.ZIP_DEFLATED) as z:
-        z.writestr("[Content_Types].xml", content_types_xml(manifests, notes_indices))
-        write_common_parts(z, len(page_entries), width, height, len(notes_by_page))
-        for slide_index, entry in enumerate(normalized_entries, start=1):
-            manifest = entry["manifest"]
-            notes_index = slide_index if slide_index in notes_by_page else None
-            z.writestr(f"ppt/slides/slide{slide_index}.xml", slide_xml(manifest))
-            z.writestr(f"ppt/slides/_rels/slide{slide_index}.xml.rels", rels_xml(manifest, media_index, notes_index))
-            base = Path(entry["manifest_path"]).resolve().parent
-            for item in manifest.get("images", []):
-                src = Path(item["path"])
-                if not src.is_absolute():
-                    src = base / src
-                z.write(src, f"ppt/media/image{media_index}{image_ext(src)}")
-                media_index += 1
-            if notes_index is not None:
-                note = notes_by_page[slide_index]
-                notes_xml = note.get("notes_xml")
-                if notes_xml and Path(notes_xml).exists():
-                    z.writestr(f"ppt/notesSlides/notesSlide{notes_index}.xml", Path(notes_xml).read_bytes())
-                else:
-                    z.writestr(f"ppt/notesSlides/notesSlide{notes_index}.xml", notes_slide_xml(note.get("text", "")))
-                z.writestr(f"ppt/notesSlides/_rels/notesSlide{notes_index}.xml.rels", notes_rels_xml(slide_index))
+    prs = _new_presentation(width, height)
+    for slide_index, entry in enumerate(normalized_entries, start=1):
+        note = notes_by_page.get(slide_index, {})
+        _add_slide(prs, entry["manifest"], entry["manifest_path"], note.get("text"))
+    _save_powerpoint(prs, out)
 
 
 def page_entries_from_deck_manifest(deck_manifest_path):

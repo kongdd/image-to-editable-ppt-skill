@@ -8,7 +8,12 @@ import zipfile
 from pathlib import Path
 from xml.etree import ElementTree as ET
 
-from build_pptx_from_manifest import TEXT_ALIGNMENTS, TEXT_VERTICAL_ALIGNMENTS, normalize_manifest
+from build_pptx_from_manifest import (
+    TEXT_ALIGNMENTS,
+    TEXT_VERTICAL_ALIGNMENTS,
+    normalize_manifest,
+    powerpoint_ooxml_issues,
+)
 
 
 NS = {
@@ -483,6 +488,7 @@ def validate_deck(args):
         "notes_found": 0,
         "notes_hash_mismatches": [],
         "missing_parts": [],
+        "powerpoint_ooxml_issues": [],
         "warnings": [],
         "passed": False,
     }
@@ -551,6 +557,8 @@ def validate_deck(args):
     except Exception as exc:
         report["warnings"].append(f"Unable to read pptx: {exc}")
 
+    report["powerpoint_ooxml_issues"] = powerpoint_ooxml_issues(args.pptx)
+
     report["passed"] = (
         report["slides"] == expected_pages
         and not report["page_manifests_missing"]
@@ -559,6 +567,7 @@ def validate_deck(args):
         and not report["page_contract_violations"]
         and not report["missing_parts"]
         and not report["notes_hash_mismatches"]
+        and not report["powerpoint_ooxml_issues"]
     )
     output = json.dumps(report, ensure_ascii=False, indent=2)
     if args.report:
@@ -655,6 +664,7 @@ def main():
         "relationship_targets_checked": 0,
         "warnings": [],
         "page_contract_violations": [],
+        "powerpoint_ooxml_issues": [],
     }
 
     try:
@@ -675,30 +685,32 @@ def main():
                     report["missing_parts"].append(part)
             slide_names = sorted(n for n in names if re.match(r"ppt/slides/slide\d+\.xml$", n))
             report["slides"] = len(slide_names)
-            report["images"] = len([n for n in names if n.startswith("ppt/media/")])
+            picture_count = 0
+            for slide_name in slide_names:
+                slide_root = ET.fromstring(z.read(slide_name))
+                picture_count += len(slide_root.findall(".//p:pic", NS))
+            report["images"] = picture_count
             report["media_manifest_mismatch"] = report["images"] != report["manifest_image_count"]
-            for index, image in enumerate(manifest.get("images", []), start=1):
+            embedded_media_hashes = {
+                hashlib.sha256(z.read(name)).hexdigest()
+                for name in names
+                if name.startswith("ppt/media/")
+            }
+            for image in manifest.get("images", []):
                 image_path = image.get("path")
                 if not image_path:
                     continue
-                ext = Path(image_path).suffix.lower()
-                if ext == ".jpeg":
-                    ext = ".jpg"
-                media_name = f"ppt/media/image{index}{ext}"
                 source_path = Path(image_path)
                 if not source_path.is_absolute():
                     source_path = manifest_base / source_path
-                if media_name not in names:
-                    report["media_hash_mismatches"].append(
-                        {"path": image_path, "media": media_name, "reason": "missing media part"}
-                    )
-                    continue
                 if source_path.exists():
-                    manifest_hash = file_sha256(source_path)
-                    media_hash = hashlib.sha256(z.read(media_name)).hexdigest()
-                    if manifest_hash != media_hash:
+                    if source_path.suffix.lower() == ".svg":
+                        report["warnings"].append(
+                            f"SVG asset rasterized to PNG for Microsoft PowerPoint compatibility: {image_path}"
+                        )
+                    elif file_sha256(source_path) not in embedded_media_hashes:
                         report["media_hash_mismatches"].append(
-                            {"path": image_path, "media": media_name, "reason": "hash mismatch"}
+                            {"path": image_path, "reason": "source bytes not found in embedded media"}
                         )
                 else:
                     report["missing_manifest_images"].append(str(image_path))
@@ -732,6 +744,8 @@ def main():
             report["all_text"] = "\n".join(texts)
     except Exception as exc:
         report["warnings"].append(f"Unable to read pptx: {exc}")
+
+    report["powerpoint_ooxml_issues"] = powerpoint_ooxml_issues(args.pptx)
 
     for text in required:
         if text and text not in report["all_text"]:
@@ -793,6 +807,7 @@ def main():
         and not report["missing_provenance_sources"]
         and not report["invalid_asset_provenance"]
         and not report["page_contract_violations"]
+        and not report["powerpoint_ooxml_issues"]
         and (report["editable_text_shapes"] > 0 or not required)
     )
 
