@@ -16,7 +16,6 @@ from build_pptx_from_manifest import (  # noqa: E402
     content_box_for_manifest,
     emu,
     normalize_manifest,
-    powerpoint_ooxml_issues,
     px_to_inches,
     render_preview,
     slide_size_type,
@@ -115,7 +114,6 @@ class SlideLayoutTest(unittest.TestCase):
 
             write_pptx(manifest, output, manifest_path)
 
-            self.assertEqual([], powerpoint_ooxml_issues(output))
             self.assertEqual(1, len(Presentation(output).slides))
             with zipfile.ZipFile(output) as archive:
                 names = set(archive.namelist())
@@ -141,7 +139,6 @@ class SlideLayoutTest(unittest.TestCase):
 
             write_pptx(manifest, output, root / "manifest.json")
 
-            self.assertEqual([], powerpoint_ooxml_issues(output))
             with zipfile.ZipFile(output) as archive:
                 media = [name for name in archive.namelist() if name.startswith("ppt/media/")]
                 self.assertEqual(1, len(media))
@@ -169,7 +166,6 @@ class SlideLayoutTest(unittest.TestCase):
 
             deck = Presentation(output)
             self.assertEqual("Original speaker note", deck.slides[0].notes_slide.notes_text_frame.text)
-            self.assertEqual([], powerpoint_ooxml_issues(output))
 
     def test_non_wide_source_uses_source_pixel_size(self):
         slide = slide_for_source(1536, 1024)

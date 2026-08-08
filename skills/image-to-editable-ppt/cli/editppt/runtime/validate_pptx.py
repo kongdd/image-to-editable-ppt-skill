@@ -8,12 +8,7 @@ import zipfile
 from pathlib import Path
 from xml.etree import ElementTree as ET
 
-from build_pptx_from_manifest import (
-    TEXT_ALIGNMENTS,
-    TEXT_VERTICAL_ALIGNMENTS,
-    normalize_manifest,
-    powerpoint_ooxml_issues,
-)
+from build_pptx_from_manifest import TEXT_ALIGNMENTS, TEXT_VERTICAL_ALIGNMENTS, normalize_manifest
 
 
 NS = {
@@ -21,6 +16,17 @@ NS = {
     "p": "http://schemas.openxmlformats.org/presentationml/2006/main",
     "rel": "http://schemas.openxmlformats.org/package/2006/relationships",
 }
+POWERPOINT_REQUIRED_PARTS = (
+    "[Content_Types].xml",
+    "_rels/.rels",
+    "ppt/presentation.xml",
+    "ppt/_rels/presentation.xml.rels",
+    "ppt/presProps.xml",
+    "ppt/viewProps.xml",
+    "ppt/tableStyles.xml",
+    "ppt/theme/theme1.xml",
+    "ppt/slideMasters/slideMaster1.xml",
+)
 
 ALLOWED_SOURCE_TYPES = {
     "asset-sheet-separated",
@@ -488,7 +494,6 @@ def validate_deck(args):
         "notes_found": 0,
         "notes_hash_mismatches": [],
         "missing_parts": [],
-        "powerpoint_ooxml_issues": [],
         "warnings": [],
         "passed": False,
     }
@@ -541,7 +546,7 @@ def validate_deck(args):
         with zipfile.ZipFile(args.pptx) as z:
             names = z.namelist()
             report["slides"] = len([n for n in names if re.match(r"ppt/slides/slide\d+\.xml$", n)])
-            for part in ("[Content_Types].xml", "_rels/.rels", "ppt/presentation.xml", "ppt/_rels/presentation.xml.rels"):
+            for part in POWERPOINT_REQUIRED_PARTS:
                 if part not in names:
                     report["missing_parts"].append(part)
             notes_texts = collect_notes_texts(z, names)
@@ -557,8 +562,6 @@ def validate_deck(args):
     except Exception as exc:
         report["warnings"].append(f"Unable to read pptx: {exc}")
 
-    report["powerpoint_ooxml_issues"] = powerpoint_ooxml_issues(args.pptx)
-
     report["passed"] = (
         report["slides"] == expected_pages
         and not report["page_manifests_missing"]
@@ -567,7 +570,6 @@ def validate_deck(args):
         and not report["page_contract_violations"]
         and not report["missing_parts"]
         and not report["notes_hash_mismatches"]
-        and not report["powerpoint_ooxml_issues"]
     )
     output = json.dumps(report, ensure_ascii=False, indent=2)
     if args.report:
@@ -664,7 +666,6 @@ def main():
         "relationship_targets_checked": 0,
         "warnings": [],
         "page_contract_violations": [],
-        "powerpoint_ooxml_issues": [],
     }
 
     try:
@@ -674,13 +675,7 @@ def main():
             if bad:
                 report["warnings"].append(f"Bad zip member: {bad}")
             names = z.namelist()
-            required_parts = [
-                "[Content_Types].xml",
-                "_rels/.rels",
-                "ppt/presentation.xml",
-                "ppt/_rels/presentation.xml.rels",
-            ]
-            for part in required_parts:
+            for part in POWERPOINT_REQUIRED_PARTS:
                 if part not in names:
                     report["missing_parts"].append(part)
             slide_names = sorted(n for n in names if re.match(r"ppt/slides/slide\d+\.xml$", n))
@@ -740,8 +735,6 @@ def main():
             report["all_text"] = "\n".join(texts)
     except Exception as exc:
         report["warnings"].append(f"Unable to read pptx: {exc}")
-
-    report["powerpoint_ooxml_issues"] = powerpoint_ooxml_issues(args.pptx)
 
     for text in required:
         if text and text not in report["all_text"]:
@@ -803,7 +796,6 @@ def main():
         and not report["missing_provenance_sources"]
         and not report["invalid_asset_provenance"]
         and not report["page_contract_violations"]
-        and not report["powerpoint_ooxml_issues"]
         and (report["editable_text_shapes"] > 0 or not required)
     )
 

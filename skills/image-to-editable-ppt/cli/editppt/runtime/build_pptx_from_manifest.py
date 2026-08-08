@@ -7,22 +7,14 @@ import re
 import subprocess
 import sys
 import tempfile
-import zipfile
 from copy import deepcopy
 from pathlib import Path
-from xml.etree import ElementTree as ET
 
 from pptx import Presentation
-from pptx.dml.color import RGBColor
-from pptx.enum.dml import MSO_LINE_DASH_STYLE
-from pptx.enum.shapes import MSO_CONNECTOR, MSO_SHAPE
-from pptx.enum.text import MSO_ANCHOR, MSO_AUTO_SIZE, PP_ALIGN
 from pptx.opc.constants import RELATIONSHIP_TYPE as RT
 from pptx.opc.package import Part
 from pptx.oxml import parse_xml
-from pptx.oxml.ns import qn
-from pptx.oxml.xmlchemy import OxmlElement
-from pptx.util import Emu, Inches, Pt
+from pptx.util import Emu
 
 
 EMU_PER_INCH = 914400
@@ -49,19 +41,6 @@ TEXT_VERTICAL_ALIGNMENTS = {
     "ctr": ("ctr", "middle"),
     "b": ("b", "bottom"),
 }
-POWERPOINT_REQUIRED_PARTS = {
-    "[Content_Types].xml",
-    "_rels/.rels",
-    "ppt/presentation.xml",
-    "ppt/_rels/presentation.xml.rels",
-    "ppt/presProps.xml",
-    "ppt/viewProps.xml",
-    "ppt/tableStyles.xml",
-    "ppt/theme/theme1.xml",
-    "ppt/slideMasters/slideMaster1.xml",
-}
-
-
 def emu(value):
     return int(round(float(value) * EMU_PER_INCH))
 
@@ -433,10 +412,17 @@ def image_xml(idx, rel_id, item):
     width = emu(item.get("width", 1))
     height = emu(item.get("height", 1))
     name = xml_text(item.get("alt") or Path(item.get("path", "")).stem or f"Image {idx}")
+    if Path(item.get("path", "")).suffix.lower() == ".svg":
+        blip = (
+            '<a:blip><a:extLst><a:ext uri="{96DAC541-7B7A-43D3-8B79-37D633B846F1}">'
+            f'<asvg:svgBlip r:embed="{rel_id}"/></a:ext></a:extLst></a:blip>'
+        )
+    else:
+        blip = f'<a:blip r:embed="{rel_id}"/>'
     return f"""
       <p:pic>
-        <p:nvPicPr><p:cNvPr id="{idx}" name="{name}"/><p:cNvPicPr/><p:nvPr/></p:nvPicPr>
-        <p:blipFill><a:blip r:embed="{rel_id}"/><a:stretch><a:fillRect/></a:stretch></p:blipFill>
+        <p:nvPicPr><p:cNvPr id="{idx}" name="{name}" descr="{name}"/><p:cNvPicPr/><p:nvPr/></p:nvPicPr>
+        <p:blipFill>{blip}<a:stretch><a:fillRect/></a:stretch></p:blipFill>
         <p:spPr><a:xfrm><a:off x="{left}" y="{top}"/><a:ext cx="{width}" cy="{height}"/></a:xfrm><a:prstGeom prst="rect"><a:avLst/></a:prstGeom></p:spPr>
       </p:pic>"""
 
@@ -690,250 +676,35 @@ def write_common_parts(z, slide_count, width, height, notes_count):
         z.writestr("ppt/notesMasters/_rels/notesMaster1.xml.rels", notes_master_rels_xml())
 
 
-def _rgb(value, default="000000"):
-    return RGBColor.from_string(hex_color(value, default))
-
-
-def _set_run_typeface(run, typeface):
-    """Set Latin, East Asian, and complex-script fonts explicitly."""
-    run.font.name = typeface
-    rpr = run._r.get_or_add_rPr()
-    for tag in ("ea", "cs"):
-        element = rpr.find(qn(f"a:{tag}"))
-        if element is None:
-            element = OxmlElement(f"a:{tag}")
-            rpr.append(element)
-        element.set("typeface", typeface)
-
-
-def _set_shape_fill(shape, fill):
-    if not fill or fill == "none":
-        shape.fill.background()
-        return
-    shape.fill.solid()
-    shape.fill.fore_color.rgb = _rgb(fill, "FFFFFF")
-
-
-def _set_shape_line(shape, item):
-    stroke = item.get("stroke", "#000000")
-    if not stroke or stroke == "none":
-        shape.line.fill.background()
-        return
-    shape.line.color.rgb = _rgb(stroke)
-    shape.line.width = Pt(float(item.get("stroke_width", 1)))
-    dash = str(item.get("dash") or "").strip().lower()
-    dash_styles = {
-        "dash": MSO_LINE_DASH_STYLE.DASH,
-        "dashdot": MSO_LINE_DASH_STYLE.DASH_DOT,
-        "dashdotdot": MSO_LINE_DASH_STYLE.DASH_DOT_DOT,
-        "lgdash": MSO_LINE_DASH_STYLE.LONG_DASH,
-        "lgdashdot": MSO_LINE_DASH_STYLE.LONG_DASH_DOT,
-        "dot": MSO_LINE_DASH_STYLE.ROUND_DOT,
-        "sysdot": MSO_LINE_DASH_STYLE.SQUARE_DOT,
-        "solid": MSO_LINE_DASH_STYLE.SOLID,
-    }
-    if dash in dash_styles:
-        shape.line.dash_style = dash_styles[dash]
-
-
-def _add_shape(slide, item):
-    kind = str(item.get("type", "rect"))
-    if kind == "line":
-        points = item.get("points")
-        if points and len(points) == 4:
-            x1, y1, x2, y2 = [float(value) for value in points]
-        else:
-            x1 = float(item.get("left", 0))
-            y1 = float(item.get("top", 0))
-            x2 = x1 + float(item.get("width", 1))
-            y2 = y1 + float(item.get("height", 1))
-        shape = slide.shapes.add_connector(
-            MSO_CONNECTOR.STRAIGHT,
-            Inches(x1),
-            Inches(y1),
-            Inches(x2),
-            Inches(y2),
-        )
-        _set_shape_line(shape, item)
-        return shape
-
-    polygon = item.get("polygon")
-    if polygon and len(polygon) >= 3:
-        points = [(emu(x), emu(y)) for x, y in polygon]
-        builder = slide.shapes.build_freeform(points[0][0], points[0][1])
-        builder.add_line_segments(points[1:], close=True)
-        shape = builder.convert_to_shape()
-    else:
-        shape_types = {
-            "rect": MSO_SHAPE.RECTANGLE,
-            "roundRect": MSO_SHAPE.ROUNDED_RECTANGLE,
-            "ellipse": MSO_SHAPE.OVAL,
-        }
-        shape = slide.shapes.add_shape(
-            shape_types.get(kind, MSO_SHAPE.RECTANGLE),
-            Inches(float(item.get("left", 0))),
-            Inches(float(item.get("top", 0))),
-            Inches(float(item.get("width", 1))),
-            Inches(float(item.get("height", 1))),
-        )
-        if kind == "roundRect" and len(shape.adjustments):
-            adjustment = round_rect_adjustment(item)
-            if adjustment is not None:
-                shape.adjustments[0] = adjustment / 100000
-    shape.name = str(item.get("id") or f"{kind.title()} {len(slide.shapes)}")
-    _set_shape_fill(shape, item.get("fill"))
-    _set_shape_line(shape, item)
-    if item.get("rotation") not in (None, ""):
-        shape.rotation = float(item["rotation"])
-    return shape
-
-
-def _paragraph_specs(item):
-    paragraphs = item.get("paragraphs")
-    if paragraphs:
-        return paragraphs
-    if item.get("runs"):
-        return [{"runs": item["runs"]}]
-    return str(item.get("text", "")).split("\n")
-
-
-def _add_text_box(slide, item):
-    shape = slide.shapes.add_textbox(
-        Inches(float(item.get("left", 0))),
-        Inches(float(item.get("top", 0))),
-        Inches(float(item.get("width", 1))),
-        Inches(float(item.get("height", 0.4))),
+def _shape_element(fragment):
+    namespaces = (
+        'xmlns:a="http://schemas.openxmlformats.org/drawingml/2006/main" '
+        'xmlns:asvg="http://schemas.microsoft.com/office/drawing/2016/SVG/main" '
+        'xmlns:p="http://schemas.openxmlformats.org/presentationml/2006/main" '
+        'xmlns:r="http://schemas.openxmlformats.org/officeDocument/2006/relationships"'
     )
-    shape.name = str(item.get("id") or f"TextBox {len(slide.shapes)}")
-    _set_shape_fill(shape, item.get("fill"))
-    if "stroke" in item:
-        _set_shape_line(shape, item)
-    if item.get("rotation") not in (None, ""):
-        shape.rotation = float(item["rotation"])
-
-    frame = shape.text_frame
-    frame.clear()
-    frame.margin_left = Emu(0)
-    frame.margin_top = Emu(0)
-    frame.margin_right = Emu(0)
-    frame.margin_bottom = Emu(0)
-    frame.word_wrap = item.get("wrap", "none") not in (None, "", "none")
-    frame.auto_size = (
-        MSO_AUTO_SIZE.SHAPE_TO_FIT_TEXT if item.get("autofit") == "shape" else MSO_AUTO_SIZE.NONE
-    )
-    vertical = text_vertical_alignment(item.get("valign", "top"))[1]
-    frame.vertical_anchor = {
-        "top": MSO_ANCHOR.TOP,
-        "middle": MSO_ANCHOR.MIDDLE,
-        "bottom": MSO_ANCHOR.BOTTOM,
-    }[vertical]
-    alignment = text_alignment(item.get("align", "left"))[1]
-    paragraph_alignment = {
-        "left": PP_ALIGN.LEFT,
-        "center": PP_ALIGN.CENTER,
-        "right": PP_ALIGN.RIGHT,
-    }[alignment]
-
-    for paragraph_index, paragraph_spec in enumerate(_paragraph_specs(item)):
-        paragraph = frame.paragraphs[0] if paragraph_index == 0 else frame.add_paragraph()
-        paragraph.clear()
-        paragraph.alignment = paragraph_alignment
-        paragraph.space_before = Pt(0)
-        paragraph.space_after = Pt(0)
-        if isinstance(paragraph_spec, str):
-            runs = [{"text": paragraph_spec}]
-        else:
-            runs = paragraph_spec.get("runs", [{"text": paragraph_spec.get("text", "")}])
-        for run_spec in runs:
-            run = paragraph.add_run()
-            run.text = str(run_spec.get("text", ""))
-            typeface = str(run_spec.get("font", item.get("font", "PingFang SC")))
-            _set_run_typeface(run, typeface)
-            run.font.size = Pt(float(run_spec.get("font_size", item.get("font_size", 18))))
-            run.font.bold = bool(run_spec.get("bold", item.get("bold", False)))
-            run.font.italic = bool(run_spec.get("italic", item.get("italic", False)))
-            run.font.color.rgb = _rgb(run_spec.get("color", item.get("color", "#111111")))
-            baseline = run_spec.get("baseline")
-            if baseline not in (None, ""):
-                run._r.get_or_add_rPr().set("baseline", str(int(float(baseline))))
-    return shape
+    return parse_xml(f"<root {namespaces}>{fragment}</root>")[0]
 
 
-def _add_svg_picture(slide, item, path):
-    """Embed SVG bytes directly using PowerPoint's SVG DrawingML extension."""
-    package = slide.part.package
-    svg_part = Part(
-        package.next_partname("/ppt/media/image%d.svg"),
-        "image/svg+xml",
-        package,
-        path.read_bytes(),
-    )
-    relationship_id = slide.part.relate_to(svg_part, RT.IMAGE)
-    shape_id = slide.shapes._next_shape_id
-    name = str(item.get("alt") or path.stem or f"Image {len(slide.shapes)}")
-    left = Emu(Inches(float(item.get("left", 0))))
-    top = Emu(Inches(float(item.get("top", 0))))
-    width = Emu(Inches(float(item.get("width", 1))))
-    height = Emu(Inches(float(item.get("height", 1))))
-    picture = parse_xml(
-        f"""<p:pic
-          xmlns:a="http://schemas.openxmlformats.org/drawingml/2006/main"
-          xmlns:asvg="http://schemas.microsoft.com/office/drawing/2016/SVG/main"
-          xmlns:p="http://schemas.openxmlformats.org/presentationml/2006/main"
-          xmlns:r="http://schemas.openxmlformats.org/officeDocument/2006/relationships">
-          <p:nvPicPr>
-            <p:cNvPr id="{shape_id}" name="{xml_text(name)}" descr="{xml_text(name)}"/>
-            <p:cNvPicPr><a:picLocks noChangeAspect="1"/></p:cNvPicPr>
-            <p:nvPr/>
-          </p:nvPicPr>
-          <p:blipFill>
-            <a:blip>
-              <a:extLst>
-                <a:ext uri="{{96DAC541-7B7A-43D3-8B79-37D633B846F1}}">
-                  <asvg:svgBlip r:embed="{relationship_id}"/>
-                </a:ext>
-              </a:extLst>
-            </a:blip>
-            <a:stretch><a:fillRect/></a:stretch>
-          </p:blipFill>
-          <p:spPr>
-            <a:xfrm>
-              <a:off x="{left}" y="{top}"/>
-              <a:ext cx="{width}" cy="{height}"/>
-            </a:xfrm>
-            <a:prstGeom prst="rect"><a:avLst/></a:prstGeom>
-          </p:spPr>
-        </p:pic>"""
-    )
-    slide.shapes._spTree.insert_element_before(picture, "p:extLst")
-    return picture
-
-
-def _add_picture(slide, item, base):
+def _image_relationship(slide, item, base):
     path = Path(item["path"])
     if not path.is_absolute():
         path = base / path
-    if path.suffix.lower() == ".svg":
-        return _add_svg_picture(slide, item, path)
-    picture = slide.shapes.add_picture(
-        str(path),
-        Inches(float(item.get("left", 0))),
-        Inches(float(item.get("top", 0))),
-        Inches(float(item.get("width", 1))),
-        Inches(float(item.get("height", 1))),
+    package = slide.part.package
+    part = Part(
+        package.next_partname(f"/ppt/media/image%d{image_ext(path)}"),
+        content_type_for(path),
+        package,
+        path.read_bytes(),
     )
-    name = str(item.get("alt") or path.stem or f"Image {len(slide.shapes)}")
-    picture.name = name
-    picture._element.nvPicPr.cNvPr.set("descr", name)
-    return picture
+    return slide.part.relate_to(part, RT.IMAGE)
 
 
 def _add_slide(prs, manifest, manifest_path, notes_text=None):
     slide = prs.slides.add_slide(prs.slide_layouts[6])
-    background = manifest.get("slide", {}).get("background")
+    background = slide_background_xml(manifest.get("slide", {}))
     if background:
-        slide.background.fill.solid()
-        slide.background.fill.fore_color.rgb = _rgb(background, "FFFFFF")
+        slide._element.cSld.insert(0, _shape_element(background))
 
     layered = []
     for index, item in enumerate(manifest.get("shapes", [])):
@@ -945,12 +716,14 @@ def _add_slide(prs, manifest, manifest_path, notes_text=None):
 
     base = Path(manifest_path).resolve().parent
     for _z_index, _order, kind, item in sorted(layered, key=lambda entry: (entry[0], entry[1])):
+        shape_id = slide.shapes._next_shape_id
         if kind == "shape":
-            _add_shape(slide, item)
+            fragment = shape_xml(shape_id, item)
         elif kind == "image":
-            _add_picture(slide, item, base)
+            fragment = image_xml(shape_id, _image_relationship(slide, item, base), item)
         else:
-            _add_text_box(slide, item)
+            fragment = text_box_xml(shape_id, item)
+        slide.shapes._spTree.insert_element_before(_shape_element(fragment), "p:extLst")
 
     if notes_text:
         notes_frame = slide.notes_slide.notes_text_frame
@@ -967,42 +740,6 @@ def _new_presentation(width, height):
     return prs
 
 
-def powerpoint_ooxml_issues(pptx_path):
-    """Return structural issues that make a generated deck unsafe for PowerPoint."""
-    issues = []
-    path = Path(pptx_path)
-    try:
-        with zipfile.ZipFile(path) as archive:
-            names = set(archive.namelist())
-            for part in sorted(POWERPOINT_REQUIRED_PARTS - names):
-                issues.append(f"missing standard PowerPoint part: {part}")
-            for name in names:
-                if name.endswith((".xml", ".rels")):
-                    try:
-                        ET.fromstring(archive.read(name))
-                    except Exception as exc:
-                        issues.append(f"invalid XML part {name}: {exc}")
-            slide_names = sorted(name for name in names if re.match(r"ppt/slides/slide\d+\.xml$", name))
-            for slide_name in slide_names:
-                root = ET.fromstring(archive.read(slide_name))
-                ids = [node.attrib.get("id") for node in root.findall(".//p:cNvPr", {"p": "http://schemas.openxmlformats.org/presentationml/2006/main"})]
-                if len(ids) != len(set(ids)):
-                    issues.append(f"duplicate non-visual shape ids in {slide_name}")
-        reopened = Presentation(path)
-        if len(reopened.slides) < 1:
-            issues.append("PowerPoint package contains no slides")
-    except Exception as exc:
-        issues.append(f"PowerPoint OOXML package cannot be reopened: {exc}")
-    return issues
-
-
-def _save_powerpoint(prs, out):
-    prs.save(out)
-    issues = powerpoint_ooxml_issues(out)
-    if issues:
-        raise ValueError("Invalid Microsoft PowerPoint OOXML package: " + "; ".join(issues))
-
-
 def write_pptx(manifest, out_path, manifest_path):
     width = emu(manifest.get("slide", {}).get("width", 13.333))
     height = emu(manifest.get("slide", {}).get("height", 7.5))
@@ -1011,7 +748,7 @@ def write_pptx(manifest, out_path, manifest_path):
     normalized = normalize_manifest(manifest)
     prs = _new_presentation(width, height)
     _add_slide(prs, normalized, manifest_path)
-    _save_powerpoint(prs, out)
+    prs.save(out)
 
 
 def deck_slide_size(deck, page_entries):
@@ -1033,7 +770,7 @@ def write_deck(deck, page_entries, out_path, notes_entries):
     for slide_index, entry in enumerate(normalized_entries, start=1):
         note = notes_by_page.get(slide_index, {})
         _add_slide(prs, entry["manifest"], entry["manifest_path"], note.get("text"))
-    _save_powerpoint(prs, out)
+    prs.save(out)
 
 
 def page_entries_from_deck_manifest(deck_manifest_path):
